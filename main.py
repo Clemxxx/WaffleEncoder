@@ -423,23 +423,34 @@ class App(_AppBase):  # type: ignore[misc]
         self.fps_entry = self._entry(fps_row, self.fps_var)
         self.fps_entry.grid(row=0, column=1, sticky="ew")
 
+        # ── codec-specific frames (only one visible at a time) ──
+        # Both frames are gridded into vid.body row=2; we swap via grid/grid_remove.
+
+        # ── HAP frame ────────────────────────────────────
+        self.hap_frame = tk.Frame(vid.body, bg=PANEL)
+        self.hap_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.hap_frame.grid_columnconfigure(1, weight=1)
+
+        tk.Label(self.hap_frame, text="── hap options ───────────────────────────────────",
+                 fg=GREEN, bg=PANEL, font=mono(9, bold=True), anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(4, 2))
+
         self.div4_enabled = BooleanVar(value=True)
-        self.div4_cb = TermCheck(vid.body, text="force resolution divisible by 4  (hap)",
+        self.div4_cb = TermCheck(self.hap_frame, text="force resolution divisible by 4",
                                   variable=self.div4_enabled, color=GREEN)
-        self.div4_cb.grid(row=2, column=0, columnspan=2, sticky="w", pady=3)
+        self.div4_cb.grid(row=1, column=0, columnspan=2, sticky="w", pady=3)
 
         self.div4_mode = StringVar(value="Nearest (stretch)")
-        self.div4_combo = self._combo(vid.body, self.div4_mode,
+        self.div4_combo = self._combo(self.hap_frame, self.div4_mode,
                                       ["Nearest (stretch)", "Round up (stretch)", "Round down (crop-like)"])
-        self._labeled(vid.body, "round", 3, self.div4_combo)
+        self._labeled(self.hap_frame, "round", 2, self.div4_combo)
 
-        # HAP chunks (parallel-decodable payload split — Smode/Resolume friendly)
         self._n_threads = os.cpu_count() or 4
         self._auto_chunks = max(1, self._n_threads // 4)
         self.chunks_var = StringVar(value=str(self._auto_chunks))
         self.chunks_auto = BooleanVar(value=True)
-        chunks_row = tk.Frame(vid.body, bg=PANEL)
-        chunks_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=3)
+        chunks_row = tk.Frame(self.hap_frame, bg=PANEL)
+        chunks_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=3)
         chunks_row.grid_columnconfigure(3, weight=1)
         tk.Label(chunks_row, text="› chunks", fg=FG_DIM, bg=PANEL,
                  font=mono(10), anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 14))
@@ -456,14 +467,23 @@ class App(_AppBase):  # type: ignore[misc]
         )
         self.chunks_spin.grid(row=0, column=2, padx=(0, 12))
         self.chunks_hint = tk.Label(chunks_row,
-                                     text=f"({self._n_threads} threads · quarter = {self._auto_chunks} · max 64 · parallel-decodable payload)",
+                                     text=f"({self._n_threads} threads · quarter = {self._auto_chunks} · max 64 · parallel-decodable)",
                                      fg=FG_DIM, bg=PANEL, font=mono(9), anchor="w")
         self.chunks_hint.grid(row=0, column=3, sticky="w")
 
+        # ── ProRes frame ─────────────────────────────────
+        self.prores_frame = tk.Frame(vid.body, bg=PANEL)
+        self.prores_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.prores_frame.grid_columnconfigure(1, weight=1)
+
+        tk.Label(self.prores_frame, text="── prores options ────────────────────────────────",
+                 fg=MAGENTA_HI, bg=PANEL, font=mono(9, bold=True), anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(4, 2))
+
         self.prores_var = StringVar(value="HQ")
-        self.prores_combo = self._combo(vid.body, self.prores_var,
+        self.prores_combo = self._combo(self.prores_frame, self.prores_var,
                                         ["Proxy", "LT", "Standard", "HQ", "4444", "4444 XQ"])
-        self._labeled(vid.body, "prores", 5, self.prores_combo)
+        self._labeled(self.prores_frame, "profile", 1, self.prores_combo)
 
         # AUDIO
         aud = Panel(right, "audio.stream", accent=CYAN)
@@ -627,21 +647,23 @@ class App(_AppBase):  # type: ignore[misc]
     def _on_codec_change(self) -> None:
         codec = self.codec_var.get()
         is_hap = codec.startswith("HAP")
-        is_prores = codec.startswith("ProRes")
-        self.div4_cb.set_enabled(is_hap)
-        self.div4_combo.configure(state=("readonly" if is_hap else "disabled"))
-        self.prores_combo.configure(state=("readonly" if is_prores else "disabled"))
+        if is_hap:
+            self.prores_frame.grid_remove()
+            self.hap_frame.grid()
+        else:
+            self.hap_frame.grid_remove()
+            self.prores_frame.grid()
+        # hap widgets are always "active" inside the hap frame — no need to disable.
+        self.div4_cb.set_enabled(True)
+        self.div4_combo.configure(state="readonly")
+        self.prores_combo.configure(state="readonly")
         self._sync_chunks_state()
 
     def _sync_chunks_state(self) -> None:
-        is_hap = self.codec_var.get().startswith("HAP")
         auto = self.chunks_auto.get()
         if auto:
             self.chunks_var.set(str(self._auto_chunks))
-        # spinbox is editable only when HAP is selected AND auto is off
-        self.chunks_spin.configure(state=("normal" if (is_hap and not auto) else "disabled"))
-        # hint colour: bright when HAP is active, very dim when not
-        self.chunks_hint.configure(fg=FG_DIM if is_hap else BORDER)
+        self.chunks_spin.configure(state=("disabled" if auto else "normal"))
 
     def _sync_states(self) -> None:
         self.fps_entry.configure(state=("normal" if self.fps_enabled.get() else "disabled"))
