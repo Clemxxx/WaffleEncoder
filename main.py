@@ -12,7 +12,7 @@ from tkinter import BooleanVar, StringVar, Tk, filedialog, font as tkfont
 import tkinter as tk
 from tkinter import ttk
 
-from transcoder import CODECS, TranscodeJob, TranscodeOptions, run_ffmpeg
+from transcoder import CODECS, TranscodeJob, TranscodeOptions, run_ffmpeg, probe_pix_fmt, has_alpha
 
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -243,6 +243,9 @@ class App(_AppBase):  # type: ignore[misc]
         self.stop_flag = threading.Event()
         self.worker: threading.Thread | None = None
         self.current_proc: subprocess.Popen | None = None
+        # alpha auto-detect state
+        self._user_set_codec = False
+        self._detected_alpha = False
 
         self._cursor_on = True
         self._ticker_idx = 0
@@ -440,7 +443,7 @@ class App(_AppBase):  # type: ignore[misc]
 
         self.codec_var = StringVar(value="HAP")
         self._labeled(vid.body, "codec", 0, self._combo(vid.body, self.codec_var,
-                      list(CODECS.keys()), self._on_codec_change))
+                      list(CODECS.keys()), self._on_codec_selected))
 
         self.fps_enabled = BooleanVar(value=False)
         self.fps_var = StringVar(value="60")
@@ -611,7 +614,7 @@ class App(_AppBase):  # type: ignore[misc]
         tk.Label(ticker_frame, textvariable=self.ticker_var, fg=FG_DIM, bg=BG,
                  font=mono(9), anchor="w").grid(row=0, column=0, sticky="ew")
 
-        self._on_codec_change()
+        self._apply_codec_change()
         self._sync_states()
 
         # route mousewheel over the options pane to the options canvas
@@ -709,7 +712,12 @@ class App(_AppBase):  # type: ignore[misc]
         self.after(120, self._scroll_ticker)
 
     # ── handlers ────────────────────────────────────────────────
-    def _on_codec_change(self) -> None:
+    def _on_codec_selected(self) -> None:
+        """Fired by the Combobox on user selection — marks codec as user-chosen."""
+        self._user_set_codec = True
+        self._apply_codec_change()
+
+    def _apply_codec_change(self) -> None:
         codec = self.codec_var.get()
         is_hap = codec.startswith("HAP")
         if is_hap:
@@ -739,11 +747,16 @@ class App(_AppBase):  # type: ignore[misc]
             title="add files",
             filetypes=[("video", " ".join(f"*{e}" for e in VIDEO_EXTS)), ("all", "*.*")],
         )
+        added: list[Path] = []
         for p in paths:
-            self._add_path(Path(p))
+            pp = Path(p)
+            if pp not in self.files:
+                self.files.append(pp)
+                added.append(pp)
         self._refresh_file_box()
-        if paths:
-            self._logln("queue", f"+ {len(paths)} file(s)", "green")
+        if added:
+            self._logln("queue", f"+ {len(added)} file(s)", "green")
+            self._probe_for_alpha(added)
 
     # ── drag-and-drop ──────────────────────────────────────────
     def _on_drop(self, event) -> None:
@@ -751,7 +764,7 @@ class App(_AppBase):  # type: ignore[misc]
             raw = self.tk.splitlist(event.data)
         except Exception:
             raw = [event.data]
-        added = 0
+        added: list[Path] = []
         skipped_non_video = 0
         for raw_path in raw:
             p = Path(raw_path)
@@ -759,20 +772,42 @@ class App(_AppBase):  # type: ignore[misc]
                 if p.suffix.lower() in VIDEO_EXTS:
                     if p not in self.files:
                         self.files.append(p)
-                        added += 1
+                        added.append(p)
                 else:
                     skipped_non_video += 1
             elif p.is_dir():
                 for sub in sorted(p.rglob("*")):
                     if sub.is_file() and sub.suffix.lower() in VIDEO_EXTS and sub not in self.files:
                         self.files.append(sub)
-                        added += 1
+                        added.append(sub)
         self._refresh_file_box()
         self._on_drop_leave(None)
         if added:
-            self._logln("drop", f"+ {added} file(s) via drag-and-drop", "green")
+            self._logln("drop", f"+ {len(added)} file(s) via drag-and-drop", "green")
+            self._probe_for_alpha(added)
         if skipped_non_video and not added:
             self._logln("drop", f"ignored {skipped_non_video} non-video file(s)", "amber")
+
+    # ── alpha auto-detect ──────────────────────────────────────
+    def _probe_for_alpha(self, paths: list[Path]) -> None:
+        """Run `ffmpeg -i` on up to 5 newly-added clips in a background thread.
+        If any has an alpha-capable pix_fmt and the user hasn't explicitly chosen
+        a codec, switch the codec to HAP Alpha."""
+        if self._user_set_codec or self._detected_alpha or not self.ffmpeg_path:
+            return
+        to_probe = paths[:5]
+
+        def work() -> None:
+            for p in to_probe:
+                if self._user_set_codec or self._detected_alpha:
+                    return
+                pix = probe_pix_fmt(self.ffmpeg_path, p)
+                if has_alpha(pix):
+                    self._detected_alpha = True
+                    self.msg_queue.put(("auto_alpha", (p.name, pix or "?")))
+                    return
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _on_drop_enter(self, _event) -> None:
         self.configure(bg=BORDER)
@@ -786,12 +821,15 @@ class App(_AppBase):  # type: ignore[misc]
         if not folder:
             return
         root = Path(folder)
-        before = len(self.files)
+        added: list[Path] = []
         for p in sorted(root.rglob("*")):
-            if p.suffix.lower() in VIDEO_EXTS and p.is_file():
-                self._add_path(p)
+            if p.suffix.lower() in VIDEO_EXTS and p.is_file() and p not in self.files:
+                self.files.append(p)
+                added.append(p)
         self._refresh_file_box()
-        self._logln("scan", f"{folder} — added {len(self.files) - before} clips", "cyan")
+        self._logln("scan", f"{folder} — added {len(added)} clips", "cyan")
+        if added:
+            self._probe_for_alpha(added)
 
     def _add_path(self, path: Path) -> None:
         if path not in self.files:
@@ -940,6 +978,17 @@ class App(_AppBase):  # type: ignore[misc]
                     self.status_var.set(str(payload))
                 elif kind == "progress" and isinstance(payload, float):
                     self.progress_var.set(self._render_bar(payload))
+                elif kind == "auto_alpha" and isinstance(payload, tuple) and len(payload) == 2:
+                    name, pix = payload
+                    # Programmatic switch — does NOT mark the codec as user-chosen.
+                    if not self._user_set_codec:
+                        self.codec_var.set("HAP Alpha")
+                        self._apply_codec_change()
+                        self._logln(
+                            "auto",
+                            f"alpha detected in {name} (pix_fmt={pix}) → codec switched to HAP Alpha",
+                            "magenta",
+                        )
                 elif kind == "finish":
                     self.progress_var.set(self._render_bar(1.0))
                     self.status_var.set("✓  done.")

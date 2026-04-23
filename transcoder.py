@@ -23,6 +23,32 @@ CODECS: dict[str, dict] = {
 
 PRORES_PROFILE_MAP = {"Proxy": 0, "LT": 1, "Standard": 2, "HQ": 3, "4444": 4, "4444 XQ": 5}
 
+# pix_fmt substrings that mean "this pixel format has an alpha channel"
+_ALPHA_HINTS = ("yuva", "rgba", "argb", "abgr", "bgra", "gbrap", "ya8", "ya16", "pal8")
+
+
+def probe_pix_fmt(ffmpeg: str, path: Path) -> str | None:
+    """Run `ffmpeg -i file` and parse the first Video: stream's pix_fmt."""
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", str(path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return None
+    text = proc.stderr or ""
+    m = re.search(r"Video:[^,]+,\s*([a-zA-Z0-9]+)", text)
+    return m.group(1).lower() if m else None
+
+
+def has_alpha(pix_fmt: str | None) -> bool:
+    if not pix_fmt:
+        return False
+    pf = pix_fmt.lower()
+    return any(s in pf for s in _ALPHA_HINTS)
+
 
 @dataclass
 class TranscodeOptions:
