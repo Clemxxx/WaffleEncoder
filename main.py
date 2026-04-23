@@ -348,16 +348,27 @@ class App(_AppBase):  # type: ignore[misc]
         tk.Label(self, text="═" * 400, fg=BORDER_HI, bg=BG, font=mono(10), anchor="w").grid(
             row=1, column=0, sticky="ew", padx=20, pady=(8, 10))
 
-        # ╭── body ──────────────────────────────────────────────
-        body = tk.Frame(self, bg=BG)
-        body.grid(row=2, column=0, sticky="nsew", padx=20)
-        body.grid_columnconfigure(0, weight=3, uniform="cols")
-        body.grid_columnconfigure(1, weight=2, uniform="cols")
-        body.grid_rowconfigure(0, weight=1)
+        # ╭── resizable body: outer vertical pane (content | log) with a horizontal
+        # pane inside for (INPUT | scrollable OPTIONS). Drag the sashes to resize.
+        self.outer_pane = tk.PanedWindow(
+            self, orient="vertical", bg=BORDER_HI,
+            sashrelief="flat", sashwidth=6, sashpad=0,
+            bd=0, opaqueresize=True, showhandle=False,
+        )
+        self.outer_pane.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 0))
 
-        # left: INPUT
-        left = Panel(body, "input.queue", accent=GREEN)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.inner_pane = tk.PanedWindow(
+            self.outer_pane, orient="horizontal", bg=BORDER_HI,
+            sashrelief="flat", sashwidth=6, sashpad=0,
+            bd=0, opaqueresize=True, showhandle=False,
+        )
+        self.outer_pane.add(self.inner_pane, minsize=220, stretch="always")
+
+        # left: INPUT — first pane of inner
+        left_wrap = tk.Frame(self.inner_pane, bg=BG)
+        self.inner_pane.add(left_wrap, minsize=320, stretch="always")
+        left = Panel(left_wrap, "input.queue", accent=GREEN)
+        left.pack(fill="both", expand=True)
         left.body.grid_rowconfigure(0, weight=1)
         left.body.grid_columnconfigure(0, weight=1)
 
@@ -398,9 +409,28 @@ class App(_AppBase):  # type: ignore[misc]
         TermButton(btns, "  × clear  ", self._clear_files, color=RED).grid(
             row=0, column=2, sticky="ew", padx=(4, 0))
 
-        # right column: options
-        right = tk.Frame(body, bg=BG)
-        right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        # right column: scrollable options — second pane of inner
+        right_wrap = tk.Frame(self.inner_pane, bg=BG)
+        self.inner_pane.add(right_wrap, minsize=320, stretch="always")
+        self.opts_canvas = tk.Canvas(right_wrap, bg=BG, highlightthickness=0, bd=0)
+        opts_sb = ttk.Scrollbar(right_wrap, orient="vertical", command=self.opts_canvas.yview,
+                                style="Term.Vertical.TScrollbar")
+        self.opts_canvas.configure(yscrollcommand=opts_sb.set)
+        self.opts_canvas.pack(side="left", fill="both", expand=True)
+        opts_sb.pack(side="right", fill="y")
+
+        right = tk.Frame(self.opts_canvas, bg=BG)
+        self._opts_window = self.opts_canvas.create_window((0, 0), window=right, anchor="nw")
+
+        def _on_right_config(_e, _c=self.opts_canvas):
+            _c.configure(scrollregion=_c.bbox("all"))
+
+        def _on_canvas_config(e, _c=self.opts_canvas, _w=self._opts_window):
+            _c.itemconfigure(_w, width=e.width)
+
+        right.bind("<Configure>", _on_right_config)
+        self.opts_canvas.bind("<Configure>", _on_canvas_config)
+        self._opts_right = right  # store for later mousewheel binding
         right.grid_columnconfigure(0, weight=1)
 
         # VIDEO
@@ -516,10 +546,11 @@ class App(_AppBase):  # type: ignore[misc]
                    variable=self.overwrite_var, color=RED).grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
 
-        # ╭── LOG ──
-        logp = Panel(self, "tx.log  >_", accent=GREEN)
-        logp.grid(row=3, column=0, sticky="nsew", padx=20, pady=(10, 8))
-        self.grid_rowconfigure(3, weight=1)
+        # ╭── LOG — second pane of the outer vertical PanedWindow ──
+        log_outer = tk.Frame(self.outer_pane, bg=BG)
+        self.outer_pane.add(log_outer, minsize=120, stretch="always")
+        logp = Panel(log_outer, "tx.log  >_", accent=GREEN)
+        logp.pack(fill="both", expand=True, pady=(4, 0))
         logp.body.grid_columnconfigure(0, weight=1)
         logp.body.grid_rowconfigure(0, weight=1)
 
@@ -548,7 +579,7 @@ class App(_AppBase):  # type: ignore[misc]
 
         # ╭── status ──
         statp = Panel(self, "status.engine", accent=MAGENTA)
-        statp.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 8))
+        statp.grid(row=3, column=0, sticky="ew", padx=20, pady=(8, 8))
         statp.body.grid_columnconfigure(0, weight=1)
 
         self.progress_var = StringVar(value=self._render_bar(0.0))
@@ -574,7 +605,7 @@ class App(_AppBase):  # type: ignore[misc]
 
         # ╭── credits ticker ──
         ticker_frame = tk.Frame(self, bg=BG)
-        ticker_frame.grid(row=5, column=0, sticky="ew", padx=20, pady=(0, 10))
+        ticker_frame.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 10))
         ticker_frame.grid_columnconfigure(0, weight=1)
         self.ticker_var = StringVar(value="")
         tk.Label(ticker_frame, textvariable=self.ticker_var, fg=FG_DIM, bg=BG,
@@ -582,6 +613,35 @@ class App(_AppBase):  # type: ignore[misc]
 
         self._on_codec_change()
         self._sync_states()
+
+        # route mousewheel over the options pane to the options canvas
+        self._bind_wheel_to_canvas(self._opts_right, self.opts_canvas)
+
+        # sash positions: run once the window has been drawn
+        self.after(60, self._set_initial_sashes)
+
+    # ── sash + wheel helpers ───────────────────────────────────
+    def _set_initial_sashes(self) -> None:
+        self.update_idletasks()
+        w = self.inner_pane.winfo_width()
+        h = self.outer_pane.winfo_height()
+        if w > 50:
+            self.inner_pane.sash_place(0, int(w * 0.58), 1)
+        if h > 50:
+            self.outer_pane.sash_place(0, 1, int(h * 0.62))
+
+    def _bind_wheel_to_canvas(self, widget: tk.Widget, canvas: tk.Canvas) -> None:
+        """Recursively bind MouseWheel on `widget` + descendants to scroll `canvas`."""
+        def on_wheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            return "break"
+
+        def apply(w: tk.Widget) -> None:
+            w.bind("<MouseWheel>", on_wheel)
+            for c in w.winfo_children():
+                apply(c)
+
+        apply(widget)
 
     # ── helpers ────────────────────────────────────────────────
     def _labeled(self, parent, label, row, widget):
