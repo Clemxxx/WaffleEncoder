@@ -433,10 +433,37 @@ class App(_AppBase):  # type: ignore[misc]
                                       ["Nearest (stretch)", "Round up (stretch)", "Round down (crop-like)"])
         self._labeled(vid.body, "round", 3, self.div4_combo)
 
+        # HAP chunks (parallel-decodable payload split — Smode/Resolume friendly)
+        self._n_threads = os.cpu_count() or 4
+        self._auto_chunks = max(1, self._n_threads // 4)
+        self.chunks_var = StringVar(value=str(self._auto_chunks))
+        self.chunks_auto = BooleanVar(value=True)
+        chunks_row = tk.Frame(vid.body, bg=PANEL)
+        chunks_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=3)
+        chunks_row.grid_columnconfigure(3, weight=1)
+        tk.Label(chunks_row, text="› chunks", fg=FG_DIM, bg=PANEL,
+                 font=mono(10), anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 14))
+        TermCheck(chunks_row, text="auto", variable=self.chunks_auto,
+                   command=self._sync_chunks_state, color=CYAN).grid(
+            row=0, column=1, padx=(0, 12), sticky="w")
+        self.chunks_spin = tk.Spinbox(
+            chunks_row, from_=1, to=64, textvariable=self.chunks_var, width=4,
+            bg=PANEL_HI, fg=FG, font=mono(10), relief="flat",
+            insertbackground=GREEN, buttonbackground=BORDER,
+            disabledbackground=PANEL, disabledforeground=FG_DIM,
+            highlightthickness=1, highlightbackground=BORDER, highlightcolor=CYAN,
+            justify="center",
+        )
+        self.chunks_spin.grid(row=0, column=2, padx=(0, 12))
+        self.chunks_hint = tk.Label(chunks_row,
+                                     text=f"({self._n_threads} threads · quarter = {self._auto_chunks} · max 64 · parallel-decodable payload)",
+                                     fg=FG_DIM, bg=PANEL, font=mono(9), anchor="w")
+        self.chunks_hint.grid(row=0, column=3, sticky="w")
+
         self.prores_var = StringVar(value="HQ")
         self.prores_combo = self._combo(vid.body, self.prores_var,
                                         ["Proxy", "LT", "Standard", "HQ", "4444", "4444 XQ"])
-        self._labeled(vid.body, "prores", 4, self.prores_combo)
+        self._labeled(vid.body, "prores", 5, self.prores_combo)
 
         # AUDIO
         aud = Panel(right, "audio.stream", accent=CYAN)
@@ -604,6 +631,17 @@ class App(_AppBase):  # type: ignore[misc]
         self.div4_cb.set_enabled(is_hap)
         self.div4_combo.configure(state=("readonly" if is_hap else "disabled"))
         self.prores_combo.configure(state=("readonly" if is_prores else "disabled"))
+        self._sync_chunks_state()
+
+    def _sync_chunks_state(self) -> None:
+        is_hap = self.codec_var.get().startswith("HAP")
+        auto = self.chunks_auto.get()
+        if auto:
+            self.chunks_var.set(str(self._auto_chunks))
+        # spinbox is editable only when HAP is selected AND auto is off
+        self.chunks_spin.configure(state=("normal" if (is_hap and not auto) else "disabled"))
+        # hint colour: bright when HAP is active, very dim when not
+        self.chunks_hint.configure(fg=FG_DIM if is_hap else BORDER)
 
     def _sync_states(self) -> None:
         self.fps_entry.configure(state=("normal" if self.fps_enabled.get() else "disabled"))
@@ -729,12 +767,19 @@ class App(_AppBase):  # type: ignore[misc]
             "Round down (crop-like)": "down",
         }
 
+        try:
+            chunks = int(self.chunks_var.get())
+        except ValueError:
+            chunks = 1
+        chunks = max(1, min(64, chunks))
+
         options = TranscodeOptions(
             codec_key=codec_key,
             prores_profile=self.prores_var.get(),
             fps=fps,
             force_div4=self.div4_enabled.get() and codec_key.startswith("HAP"),
             div4_mode=mode_map[self.div4_mode.get()],
+            hap_chunks=chunks,
             audio_enabled=self.audio_enabled.get(),
             audio_codec=self.audio_codec.get(),
             suffix=suffix,

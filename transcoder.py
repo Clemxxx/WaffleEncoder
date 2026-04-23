@@ -31,6 +31,7 @@ class TranscodeOptions:
     fps: float | None = None
     force_div4: bool = True
     div4_mode: str = "nearest"   # nearest | up | down
+    hap_chunks: int = 1          # HAP-only: parallel-decodable chunks (1..64)
     audio_enabled: bool = True
     audio_codec: str = "pcm_s16le"
     suffix: str = ""
@@ -70,8 +71,12 @@ def build_cmd(ffmpeg: str, job: TranscodeJob, opts: TranscodeOptions) -> list[st
 
     # Video
     cmd += ["-c:v", codec_def["vcodec"]]
-    if codec_def["vcodec"] == "hap" and codec_def.get("fmt"):
-        cmd += ["-format", codec_def["fmt"]]
+    if codec_def["vcodec"] == "hap":
+        if codec_def.get("fmt"):
+            cmd += ["-format", codec_def["fmt"]]
+        chunks = max(1, min(64, int(opts.hap_chunks)))
+        if chunks > 1:
+            cmd += ["-chunks", str(chunks)]
     if codec_def["vcodec"] == "prores_ks":
         profile = PRORES_PROFILE_MAP.get(opts.prores_profile, 3)
         cmd += ["-profile:v", str(profile), "-vendor", "apl0"]
