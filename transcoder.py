@@ -35,6 +35,7 @@ class TranscodeOptions:
     audio_enabled: bool = True
     audio_codec: str = "pcm_s16le"
     suffix: str = ""
+    overwrite: bool = False      # if False, skip jobs whose destination already exists
 
 
 @dataclass
@@ -118,6 +119,10 @@ def run_ffmpeg(
     register_proc: Callable[[subprocess.Popen | None], None],
 ) -> Generator[tuple[str, object], None, None]:
     job.dst.parent.mkdir(parents=True, exist_ok=True)
+    if job.dst.exists() and not opts.overwrite:
+        yield ("log", f"skip: {job.dst.name} already exists (tick 'overwrite existing files' to replace)\n")
+        yield ("done", "skipped")
+        return
     cmd = build_cmd(ffmpeg, job, opts)
     yield ("log", "CMD: " + " ".join(_quote(a) for a in cmd) + "\n")
 

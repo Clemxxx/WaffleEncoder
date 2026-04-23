@@ -511,6 +511,11 @@ class App(_AppBase):  # type: ignore[misc]
         self.suffix_var = StringVar(value="")
         self._labeled(out.body, "suffix", 2, self._entry(out.body, self.suffix_var))
 
+        self.overwrite_var = BooleanVar(value=False)
+        TermCheck(out.body, text="overwrite existing files",
+                   variable=self.overwrite_var, color=RED).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
+
         # ╭── LOG ──
         logp = Panel(self, "tx.log  >_", accent=GREEN)
         logp.grid(row=3, column=0, sticky="nsew", padx=20, pady=(10, 8))
@@ -805,6 +810,7 @@ class App(_AppBase):  # type: ignore[misc]
             audio_enabled=self.audio_enabled.get(),
             audio_codec=self.audio_codec.get(),
             suffix=suffix,
+            overwrite=self.overwrite_var.get(),
         )
 
         jobs: list[TranscodeJob] = []
@@ -838,9 +844,12 @@ class App(_AppBase):  # type: ignore[misc]
                     elif kind == "log":
                         self.msg_queue.put(("logRaw", str(payload)))
                     elif kind == "done":
-                        ok = bool(payload)
-                        self.msg_queue.put(("log", ("done", "OK — wrote " + str(job.dst) if ok else "FAILED",
-                                                    "green" if ok else "red")))
+                        if payload == "skipped":
+                            self.msg_queue.put(("log", ("done", "SKIPPED (output exists)", "amber")))
+                        elif payload:
+                            self.msg_queue.put(("log", ("done", f"OK — wrote {job.dst}", "green")))
+                        else:
+                            self.msg_queue.put(("log", ("done", "FAILED", "red")))
             except Exception as e:  # pragma: no cover
                 self.msg_queue.put(("log", ("err", str(e), "red")))
         self.msg_queue.put(("finish", None))
